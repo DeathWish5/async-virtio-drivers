@@ -1,10 +1,23 @@
 use super::*;
 use crate::header::VirtIOHeader;
 use crate::queue::VirtQueue;
+#[cfg(feature = "async")]
+use alloc::sync::Arc;
 use bitflags::*;
 use core::hint::spin_loop;
+#[cfg(feature = "async")]
+use core::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll, Waker},
+};
+#[cfg(feature = "async")]
+use spin::Mutex;
+
 use log::*;
 use volatile::Volatile;
+
+const QUEUE_SIZE: usize = 16;
 
 /// The virtio block device is a simple virtual block device (ie. disk).
 ///
@@ -13,6 +26,8 @@ use volatile::Volatile;
 pub struct VirtIOBlk<'a> {
     header: &'static mut VirtIOHeader,
     queue: VirtQueue<'a>,
+    #[cfg(feature = "async")]
+    blkinfos: Arc<Mutex<[BlkInfo; QUEUE_SIZE]>>,
     capacity: usize,
 }
 
@@ -35,12 +50,14 @@ impl VirtIOBlk<'_> {
             config.capacity.read() / 2
         );
 
-        let queue = VirtQueue::new(header, 0, 16)?;
+        let queue = VirtQueue::new(header, 0, QUEUE_SIZE as u16)?;
         header.finish_init();
 
         Ok(VirtIOBlk {
             header,
             queue,
+            #[cfg(feature = "async")]
+            blkinfos: Arc::new(Mutex::new([NULLINFO; QUEUE_SIZE])),
             capacity: config.capacity.read() as usize,
         })
     }
@@ -50,6 +67,7 @@ impl VirtIOBlk<'_> {
         self.header.ack_interrupt()
     }
 
+    #[cfg(not(feature = "async"))]
     /// Read a block.
     pub fn read_block(&mut self, block_id: usize, buf: &mut [u8]) -> Result {
         assert_eq!(buf.len(), BLK_SIZE);
@@ -71,6 +89,49 @@ impl VirtIOBlk<'_> {
         }
     }
 
+    #[cfg(feature = "async")]
+    /// Read a block.
+    pub fn read_block(
+        &mut self,
+        block_id: usize,
+        buf: &mut [u8],
+    ) -> Result<impl Future<Output = Result>> {
+        assert_eq!(buf.len(), BLK_SIZE);
+        let req = BlkReq {
+            type_: ReqType::In,
+            reserved: 0,
+            sector: block_id as u64,
+        };
+        let mut future = BlkFuture {
+            resp: BlkResp::default(),
+            head: 0,
+            infos: self.blkinfos.clone(),
+        };
+        future.head = self
+            .queue
+            .add(&[req.as_buf()], &[buf, future.resp.as_buf_mut()])?;
+        self.header.notify(0);
+        Ok(future)
+    }
+
+    #[cfg(feature = "async")]
+    /// Handle virtio blk intrupt.
+    pub fn handle_interrupt(&mut self) -> Result {
+        if !self.queue.can_pop() {
+            return Err(Error::NotReady);
+        }
+        let mut infos = self.blkinfos.lock();
+        while self.queue.can_pop() {
+            let (idx, _) = self.queue.pop_used()?;
+            match infos[idx as usize].waker.take() {
+                Some(waker) => waker.wake(),
+                None => return Err(Error::UnknownError), // should not happend
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "async"))]
     /// Write a block.
     pub fn write_block(&mut self, block_id: usize, buf: &[u8]) -> Result {
         assert_eq!(buf.len(), BLK_SIZE);
@@ -90,6 +151,31 @@ impl VirtIOBlk<'_> {
             RespStatus::Ok => Ok(()),
             _ => Err(Error::IoError),
         }
+    }
+
+    #[cfg(feature = "async")]
+    /// Write a block.
+    pub fn write_block(
+        &mut self,
+        block_id: usize,
+        buf: &[u8],
+    ) -> Result<impl Future<Output = Result>> {
+        assert_eq!(buf.len(), BLK_SIZE);
+        let req = BlkReq {
+            type_: ReqType::Out,
+            reserved: 0,
+            sector: block_id as u64,
+        };
+        let mut future = BlkFuture {
+            resp: BlkResp::default(),
+            head: 0,
+            infos: self.blkinfos.clone(),
+        };
+        future.head = self
+            .queue
+            .add(&[req.as_buf(), buf], &[future.resp.as_buf_mut()])?;
+        self.header.notify(0);
+        Ok(future)
     }
 }
 
@@ -141,13 +227,54 @@ enum RespStatus {
     Ok = 0,
     IoErr = 1,
     Unsupported = 2,
-    _NotReady = 3,
+    _NotReady = 0xFF,
 }
 
 impl Default for BlkResp {
     fn default() -> Self {
-        BlkResp {
+        Self {
             status: RespStatus::_NotReady,
+        }
+    }
+}
+
+#[cfg(feature = "async")]
+#[repr(C)]
+#[derive(Debug)]
+struct BlkInfo {
+    waker: Option<Waker>,
+}
+
+#[cfg(feature = "async")]
+const NULLINFO: BlkInfo = BlkInfo::new();
+
+#[cfg(feature = "async")]
+impl BlkInfo {
+    const fn new() -> Self {
+        BlkInfo { waker: None }
+    }
+}
+
+#[cfg(feature = "async")]
+struct BlkFuture {
+    resp: BlkResp,
+    head: u16,
+    infos: Arc<Mutex<[BlkInfo; QUEUE_SIZE]>>,
+}
+
+#[cfg(feature = "async")]
+impl Future for BlkFuture {
+    type Output = Result;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        match self.resp.status {
+            RespStatus::Ok => Poll::Ready(Ok(())),
+            RespStatus::_NotReady => {
+                let mut infos = self.infos.lock();
+                infos[self.head as usize].waker = Some(cx.waker().clone());
+                // TODO: register waker
+                Poll::Pending
+            }
+            _ => Poll::Ready(Err(Error::IoError)),
         }
     }
 }

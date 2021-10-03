@@ -8,6 +8,9 @@
 // #[macro_use]
 extern crate log;
 
+#[cfg(feature = "async")]
+extern crate alloc;
+
 mod blk;
 mod console;
 mod gpu;
@@ -52,6 +55,8 @@ pub enum Error {
     DmaError,
     /// I/O Error
     IoError,
+    /// Unknown Error
+    UnknownError,
 }
 
 /// Align `size` up to a page.
