@@ -3,15 +3,17 @@ use crate::header::VirtIOHeader;
 use crate::queue::VirtQueue;
 use alloc::sync::Arc;
 use bitflags::*;
+#[cfg(not(feature = "async"))]
 use core::hint::spin_loop;
+#[cfg(feature = "async")]
 use core::slice;
-use spin::Mutex;
 #[cfg(feature = "async")]
 use core::{
     future::Future,
     pin::Pin,
     task::{Context, Poll, Waker},
 };
+use spin::Mutex;
 
 use log::*;
 use volatile::Volatile;
@@ -291,15 +293,15 @@ impl Future for BlkFuture<'_> {
         let mut inner = self.inner.lock();
         let mut driver = self.driver.inner.lock();
         if inner.first {
-            let mut inner = self.inner.lock();
             if self.arg.req.type_ == ReqType::In {
-                let buf = unsafe { slice::from_raw_parts_mut(self.arg.addr as *mut _, self.arg.len) };
+                let buf =
+                    unsafe { slice::from_raw_parts_mut(self.arg.addr as *mut _, self.arg.len) };
                 inner.head = driver.queue.add(
                     &[self.arg.req.as_buf()],
                     &[buf, self.arg.resp.as_buf_mut_unchecked()],
-                )?; 
+                )?;
             } else {
-                let buf = unsafe { slice::from_raw_parts(self.arg.addr as *const _, self.arg.len) } ;
+                let buf = unsafe { slice::from_raw_parts(self.arg.addr as *const _, self.arg.len) };
                 inner.head = driver.queue.add(
                     &[self.arg.req.as_buf(), buf],
                     &[self.arg.resp.as_buf_mut_unchecked()],
