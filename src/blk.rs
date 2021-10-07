@@ -6,8 +6,6 @@ use bitflags::*;
 #[cfg(not(feature = "async"))]
 use core::hint::spin_loop;
 #[cfg(feature = "async")]
-use core::slice;
-#[cfg(feature = "async")]
 use core::{
     future::Future,
     pin::Pin,
@@ -86,7 +84,7 @@ impl<'a> VirtIOBlk<'a> {
             let (idx, _) = inner.queue.pop_used()?;
             match inner.blkinfos[idx as usize].waker.take() {
                 Some(waker) => waker.wake(),
-                None => return Err(Error::UnknownError), // should not happend
+                None => (), // Do Nothing
             }
         }
         Ok(())
@@ -121,23 +119,18 @@ impl<'a> VirtIOBlk<'a> {
     /// Read a block.
     pub fn read_block(self: Arc<Self>, block_id: usize, buf: &mut [u8]) -> Result<BlkFuture<'a>> {
         assert_eq!(buf.len(), BLK_SIZE);
-        Ok(BlkFuture {
-            arg: BlkArg {
-                req: BlkReq {
-                    type_: ReqType::In,
-                    reserved: 0,
-                    sector: block_id as u64,
-                },
-                resp: BlkResp::default(),
-                addr: buf.as_ptr() as usize,
-                len: buf.len(),
-            },
-            driver: Arc::clone(&self),
-            inner: Mutex::new(BlkFutureInner {
-                head: 0,
-                first: true,
-            }),
-        })
+        let req = BlkReq {
+            type_: ReqType::In,
+            reserved: 0,
+            sector: block_id as u64,
+        };
+        let mut inner = self.inner.lock();
+        let mut future = BlkFuture::new(Arc::clone(&self));
+        future.head = inner
+            .queue
+            .add(&[req.as_buf()], &[buf, future.resp.as_buf_mut()])?;
+        inner.header.notify(0);
+        Ok(future)
     }
 
     #[cfg(not(feature = "async"))]
@@ -169,23 +162,18 @@ impl<'a> VirtIOBlk<'a> {
     /// Write a block.
     pub fn write_block(self: Arc<Self>, block_id: usize, buf: &[u8]) -> Result<BlkFuture<'a>> {
         assert_eq!(buf.len(), BLK_SIZE);
-        Ok(BlkFuture {
-            arg: BlkArg {
-                req: BlkReq {
-                    type_: ReqType::Out,
-                    reserved: 0,
-                    sector: block_id as u64,
-                },
-                resp: BlkResp::default(),
-                addr: buf.as_ptr() as usize,
-                len: buf.len(),
-            },
-            driver: Arc::clone(&self),
-            inner: Mutex::new(BlkFutureInner {
-                head: 0,
-                first: true,
-            }),
-        })
+        let req = BlkReq {
+            type_: ReqType::Out,
+            reserved: 0,
+            sector: block_id as u64,
+        };
+        let mut inner = self.inner.lock();
+        let mut future = BlkFuture::new(Arc::clone(&self));
+        future.head = inner
+            .queue
+            .add(&[req.as_buf(), buf], &[future.resp.as_buf_mut()])?;
+        inner.header.notify(0);
+        Ok(future)
     }
 }
 
@@ -266,55 +254,41 @@ impl BlkInfo {
 }
 
 #[cfg(feature = "async")]
-struct BlkArg {
-    req: BlkReq,
-    resp: BlkResp,
-    addr: usize,
-    len: usize,
-}
-
-#[cfg(feature = "async")]
 pub struct BlkFuture<'a> {
-    arg: BlkArg,
+    resp: BlkResp,
+    head: u16,
     driver: Arc<VirtIOBlk<'a>>,
-    inner: Mutex<BlkFutureInner>,
+    // inner: Mutex<BlkFutureInner>,
 }
 
 #[cfg(feature = "async")]
-struct BlkFutureInner {
-    head: u16,
-    first: bool,
+impl<'a> BlkFuture<'a> {
+    pub fn new(driver: Arc<VirtIOBlk<'a>>) -> Self {
+        Self {
+            resp: BlkResp::default(),
+            head: u16::MAX,
+            driver: Arc::clone(&driver),
+            // inner: Mutex::new(BlkFutureInner {
+            //     head: usize::MAX,
+            // }),
+        }
+    }
 }
+
+// #[cfg(feature = "async")]
+// struct BlkFutureInner {
+//     head: u16,
+// }
 
 #[cfg(feature = "async")]
 impl Future for BlkFuture<'_> {
     type Output = Result;
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        let mut inner = self.inner.lock();
         let mut driver = self.driver.inner.lock();
-        if inner.first {
-            if self.arg.req.type_ == ReqType::In {
-                let buf =
-                    unsafe { slice::from_raw_parts_mut(self.arg.addr as *mut _, self.arg.len) };
-                inner.head = driver.queue.add(
-                    &[self.arg.req.as_buf()],
-                    &[buf, self.arg.resp.as_buf_mut_unchecked()],
-                )?;
-            } else {
-                let buf = unsafe { slice::from_raw_parts(self.arg.addr as *const _, self.arg.len) };
-                inner.head = driver.queue.add(
-                    &[self.arg.req.as_buf(), buf],
-                    &[self.arg.resp.as_buf_mut_unchecked()],
-                )?;
-            }
-            driver.header.notify(0);
-            inner.first = false;
-            return Poll::Pending;
-        }
-        match self.arg.resp.status {
+        match self.resp.status {
             RespStatus::Ok => Poll::Ready(Ok(())),
             RespStatus::_NotReady => {
-                driver.blkinfos[inner.head as usize].waker = Some(cx.waker().clone());
+                driver.blkinfos[self.head as usize].waker = Some(cx.waker().clone());
                 Poll::Pending
             }
             _ => Poll::Ready(Err(Error::IoError)),
