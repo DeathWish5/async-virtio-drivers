@@ -68,14 +68,14 @@ impl<'a> VirtIOBlk<'a> {
     }
 
     /// Acknowledge interrupt.
-    pub fn ack_interrupt(self: Arc<Self>) -> bool {
+    pub fn ack_interrupt(self: &Arc<Self>) -> bool {
         let mut inner = self.inner.lock();
         inner.header.ack_interrupt()
     }
 
     #[cfg(feature = "async")]
     /// Handle virtio blk intrupt.
-    pub fn handle_interrupt(self: Arc<Self>) -> Result {
+    pub fn handle_interrupt(self: &Arc<Self>) -> Result {
         let mut inner = self.inner.lock();
         if !inner.queue.can_pop() {
             return Err(Error::NotReady);
@@ -91,7 +91,7 @@ impl<'a> VirtIOBlk<'a> {
 
     #[cfg(not(feature = "async"))]
     /// Read a block.
-    pub fn read_block(self: Arc<Self>, block_id: usize, buf: &mut [u8]) -> Result {
+    pub fn read_block(self: &Arc<Self>, block_id: usize, buf: &mut [u8]) -> Result {
         assert_eq!(buf.len(), BLK_SIZE);
         let req = BlkReq {
             type_: ReqType::In,
@@ -116,7 +116,7 @@ impl<'a> VirtIOBlk<'a> {
 
     #[cfg(feature = "async")]
     /// Read a block.
-    pub fn read_block(self: Arc<Self>, block_id: usize, buf: &mut [u8]) -> BlkFuture<'a> {
+    pub fn read_block(self: &Arc<Self>, block_id: usize, buf: &mut [u8]) -> BlkFuture<'a> {
         assert_eq!(buf.len(), BLK_SIZE);
         let req = BlkReq {
             type_: ReqType::In,
@@ -140,7 +140,7 @@ impl<'a> VirtIOBlk<'a> {
 
     #[cfg(not(feature = "async"))]
     /// Write a block.
-    pub fn write_block(self: Arc<Self>, block_id: usize, buf: &[u8]) -> Result {
+    pub fn write_block(self: &Arc<Self>, block_id: usize, buf: &[u8]) -> Result {
         assert_eq!(buf.len(), BLK_SIZE);
         let req = BlkReq {
             type_: ReqType::Out,
@@ -165,7 +165,7 @@ impl<'a> VirtIOBlk<'a> {
 
     #[cfg(feature = "async")]
     /// Write a block.
-    pub fn write_block(self: Arc<Self>, block_id: usize, buf: &[u8]) -> BlkFuture<'a> {
+    pub fn write_block(self: &Arc<Self>, block_id: usize, buf: &[u8]) -> BlkFuture<'a> {
         assert_eq!(buf.len(), BLK_SIZE);
         let req = BlkReq {
             type_: ReqType::Out,
@@ -284,11 +284,6 @@ impl<'a> BlkFuture<'a> {
         }
     }
 }
-
-// #[cfg(feature = "async")]
-// struct BlkFutureInner {
-//     head: u16,
-// }
 
 #[cfg(feature = "async")]
 impl Future for BlkFuture<'_> {
