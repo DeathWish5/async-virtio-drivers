@@ -54,8 +54,6 @@ pub enum Error {
     DmaError,
     /// I/O Error
     IoError,
-    /// Unknown Error
-    UnknownError,
 }
 
 /// Align `size` up to a page.
