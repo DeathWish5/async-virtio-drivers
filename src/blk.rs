@@ -16,6 +16,8 @@ use spin::Mutex;
 use log::*;
 use volatile::Volatile;
 
+use alloc::boxed::Box;
+
 const QUEUE_SIZE: usize = 16;
 
 /// The virtio block device is a simple virtual block device (ie. disk).
@@ -75,7 +77,7 @@ impl<'a> VirtIOBlk<'a> {
 
     #[cfg(feature = "async")]
     /// Handle virtio blk intrupt.
-    pub fn handle_interrupt(self: &Arc<Self>) -> Result {
+    pub fn handle_irq(self: &Arc<Self>) -> Result {
         let mut inner = self.inner.lock();
         if !inner.queue.can_pop() {
             return Err(Error::NotReady);
@@ -116,7 +118,7 @@ impl<'a> VirtIOBlk<'a> {
 
     #[cfg(feature = "async")]
     /// Read a block.
-    pub fn read_block(self: &Arc<Self>, block_id: usize, buf: &mut [u8]) -> BlkFuture<'a> {
+    pub fn read_block(self: &Arc<Self>, block_id: usize, buf: &mut [u8]) -> Pin<Box<BlkFuture<'a>>> {
         assert_eq!(buf.len(), BLK_SIZE);
         let req = BlkReq {
             type_: ReqType::In,
@@ -124,7 +126,7 @@ impl<'a> VirtIOBlk<'a> {
             sector: block_id as u64,
         };
         let mut inner = self.inner.lock();
-        let mut future = BlkFuture::new(Arc::clone(&self));
+        let mut future = Box::pin(BlkFuture::new(Arc::clone(&self)));
         match inner
             .queue
             .add(&[req.as_buf()], &[buf, future.resp.as_buf_mut()])
@@ -165,7 +167,7 @@ impl<'a> VirtIOBlk<'a> {
 
     #[cfg(feature = "async")]
     /// Write a block.
-    pub fn write_block(self: &Arc<Self>, block_id: usize, buf: &[u8]) -> BlkFuture<'a> {
+    pub fn write_block(self: &Arc<Self>, block_id: usize, buf: &[u8]) -> Pin<Box<BlkFuture<'a>>> {
         assert_eq!(buf.len(), BLK_SIZE);
         let req = BlkReq {
             type_: ReqType::Out,
@@ -173,7 +175,7 @@ impl<'a> VirtIOBlk<'a> {
             sector: block_id as u64,
         };
         let mut inner = self.inner.lock();
-        let mut future = BlkFuture::new(Arc::clone(&self));
+        let mut future = Box::pin(BlkFuture::new(Arc::clone(&self)));
         match inner
             .queue
             .add(&[req.as_buf(), buf], &[future.resp.as_buf_mut()])
@@ -293,7 +295,7 @@ impl Future for BlkFuture<'_> {
             return Poll::Ready(Err(e));
         }
         let mut driver = self.driver.inner.lock();
-        match self.resp.status {
+        match unsafe { core::ptr::read_volatile(&self.resp.status) } {
             RespStatus::Ok => Poll::Ready(Ok(())),
             RespStatus::_NotReady => {
                 driver.blkinfos[self.head as usize].waker = Some(cx.waker().clone());

@@ -81,9 +81,9 @@ impl VirtQueue<'_> {
             return Err(Error::InvalidParam);
         }
         if inputs.len() + outputs.len() + self.num_used as usize > self.queue_size as usize {
-            return Err(Error::BufferTooSmall);
+            // return Err(Error::BufferTooSmall);
+            unimplemented!();
         }
-
         // allocate descriptors from free list
         let head = self.free_head;
         let mut last = self.free_head;
