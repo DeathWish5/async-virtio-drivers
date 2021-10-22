@@ -17,9 +17,7 @@ use log::*;
 use volatile::Volatile;
 
 use alloc::boxed::Box;
-
-const QUEUE_SIZE: usize = 16;
-
+use alloc::vec::Vec;
 /// The virtio block device is a simple virtual block device (ie. disk).
 ///
 /// Read and write requests (and other exotic requests) are placed in the queue,
@@ -33,7 +31,7 @@ struct VirtIoBlkInner<'a> {
     header: &'static mut VirtIOHeader,
     queue: VirtQueue<'a>,
     #[cfg(feature = "async")]
-    blkinfos: [BlkInfo; QUEUE_SIZE],
+    blkinfos: Box<[BlkInfo]>,
 }
 
 impl<'a> VirtIOBlk<'a> {
@@ -54,8 +52,8 @@ impl<'a> VirtIOBlk<'a> {
             "found a block device of size {}KB",
             config.capacity.read() / 2
         );
-
-        let queue = VirtQueue::new(header, 0, QUEUE_SIZE as u16)?;
+        let queue_size = header.max_queue_size();
+        let queue = VirtQueue::new(header, 0, queue_size as u16)?;
         header.finish_init();
 
         Ok(VirtIOBlk {
@@ -64,7 +62,11 @@ impl<'a> VirtIOBlk<'a> {
                 header,
                 queue,
                 #[cfg(feature = "async")]
-                blkinfos: [NULLINFO; QUEUE_SIZE],
+                blkinfos: {
+                    let mut vec = Vec::<BlkInfo>::with_capacity(queue_size as usize);
+                    vec.resize_with(queue_size as usize, || NULLINFO);
+                    vec.into_boxed_slice()
+                },
             }),
         })
     }
@@ -118,7 +120,11 @@ impl<'a> VirtIOBlk<'a> {
 
     #[cfg(feature = "async")]
     /// Read a block.
-    pub fn read_block(self: &Arc<Self>, block_id: usize, buf: &mut [u8]) -> Pin<Box<BlkFuture<'a>>> {
+    pub fn read_block(
+        self: &Arc<Self>,
+        block_id: usize,
+        buf: &mut [u8],
+    ) -> Pin<Box<BlkFuture<'a>>> {
         assert_eq!(buf.len(), BLK_SIZE);
         let req = BlkReq {
             type_: ReqType::In,

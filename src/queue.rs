@@ -8,6 +8,8 @@ use bitflags::*;
 
 use volatile::Volatile;
 
+use log::*;
+
 /// The mechanism for bulk data transport on virtio devices.
 ///
 /// Each device can have zero or more virtqueues.
@@ -32,6 +34,8 @@ pub struct VirtQueue<'a> {
     free_head: u16,
     avail_idx: u16,
     last_used_idx: u16,
+    // Waker to notify that there are more available descriptors
+    // waker: Option<Waker>,
 }
 
 impl VirtQueue<'_> {
@@ -40,7 +44,7 @@ impl VirtQueue<'_> {
         if header.queue_used(idx as u32) {
             return Err(Error::AlreadyUsed);
         }
-        if !size.is_power_of_two() || header.max_queue_size() < size as u32 {
+        if !size.is_power_of_two() || header.max_queue_size() < size as u32 || size > MAX_QUEUE_SIZE as u16 {
             return Err(Error::InvalidParam);
         }
         let layout = VirtQueueLayout::new(size);
@@ -81,6 +85,7 @@ impl VirtQueue<'_> {
             return Err(Error::InvalidParam);
         }
         if inputs.len() + outputs.len() + self.num_used as usize > self.queue_size as usize {
+            // TODO: should wait when queue is full. 
             // return Err(Error::BufferTooSmall);
             unimplemented!();
         }
@@ -233,8 +238,8 @@ struct AvailRing {
     flags: Volatile<u16>,
     /// A driver MUST NOT decrement the idx.
     idx: Volatile<u16>,
-    ring: [Volatile<u16>; 32], // actual size: queue_size
-    used_event: Volatile<u16>, // unused
+    ring: [Volatile<u16>; MAX_QUEUE_SIZE], // actual size: queue_size
+                                           // used_event: Volatile<u16>,
 }
 
 /// The used ring is where the device returns buffers once it is done with them:
@@ -244,8 +249,8 @@ struct AvailRing {
 struct UsedRing {
     flags: Volatile<u16>,
     idx: Volatile<u16>,
-    ring: [UsedElem; 32],       // actual size: queue_size
-    avail_event: Volatile<u16>, // unused
+    ring: [UsedElem; MAX_QUEUE_SIZE], // actual size: queue_size
+                                      // avail_event: Volatile<u16>,
 }
 
 #[repr(C)]

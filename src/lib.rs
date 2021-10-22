@@ -30,6 +30,7 @@ use core::mem::size_of;
 use hal::*;
 
 const PAGE_SIZE: usize = 0x1000;
+const MAX_QUEUE_SIZE: usize = 4096;
 
 /// The type returned by driver methods.
 pub type Result<T = ()> = core::result::Result<T, Error>;
