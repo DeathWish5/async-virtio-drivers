@@ -245,6 +245,7 @@ impl VirtIOGpu<'_> {
         rsp.check_type(Command::OkNodata)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn update_cursor(
         &mut self,
         resource_id: u32,

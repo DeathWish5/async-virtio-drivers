@@ -16,8 +16,9 @@ use spin::Mutex;
 use log::*;
 use volatile::Volatile;
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
+#[cfg(feature = "async")]
+use alloc::{boxed::Box, vec::Vec};
+
 /// The virtio block device is a simple virtual block device (ie. disk).
 ///
 /// Read and write requests (and other exotic requests) are placed in the queue,

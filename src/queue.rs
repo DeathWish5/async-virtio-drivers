@@ -8,8 +8,6 @@ use bitflags::*;
 
 use volatile::Volatile;
 
-use log::*;
-
 /// The mechanism for bulk data transport on virtio devices.
 ///
 /// Each device can have zero or more virtqueues.
@@ -44,7 +42,10 @@ impl VirtQueue<'_> {
         if header.queue_used(idx as u32) {
             return Err(Error::AlreadyUsed);
         }
-        if !size.is_power_of_two() || header.max_queue_size() < size as u32 || size > MAX_QUEUE_SIZE as u16 {
+        if !size.is_power_of_two()
+            || header.max_queue_size() < size as u32
+            || size > MAX_QUEUE_SIZE as u16
+        {
             return Err(Error::InvalidParam);
         }
         let layout = VirtQueueLayout::new(size);
@@ -85,7 +86,7 @@ impl VirtQueue<'_> {
             return Err(Error::InvalidParam);
         }
         if inputs.len() + outputs.len() + self.num_used as usize > self.queue_size as usize {
-            // TODO: should wait when queue is full. 
+            // TODO: should wait when queue is full.
             // return Err(Error::BufferTooSmall);
             unimplemented!();
         }

@@ -60,7 +60,7 @@ impl<'a> VirtIOConsole<'a> {
         }
         let mut flag = false;
         while let Ok((_token, len)) = self.receiveq.pop_used() {
-            assert_eq!(flag, false);
+            assert!(flag);
             flag = true;
             assert_ne!(len, 0);
             self.cursor = 0;
