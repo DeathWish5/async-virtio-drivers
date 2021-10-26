@@ -1,23 +1,16 @@
 use super::*;
 use crate::header::VirtIOHeader;
 use crate::queue::VirtQueue;
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use bitflags::*;
-#[cfg(not(feature = "async"))]
-use core::hint::spin_loop;
-#[cfg(feature = "async")]
 use core::{
     future::Future,
     pin::Pin,
     task::{Context, Poll, Waker},
 };
-use spin::Mutex;
-
 use log::*;
+use spin::Mutex;
 use volatile::Volatile;
-
-#[cfg(feature = "async")]
-use alloc::{boxed::Box, vec::Vec};
 
 /// The virtio block device is a simple virtual block device (ie. disk).
 ///
@@ -31,7 +24,6 @@ pub struct VirtIOBlk<'a> {
 struct VirtIoBlkInner<'a> {
     header: &'static mut VirtIOHeader,
     queue: VirtQueue<'a>,
-    #[cfg(feature = "async")]
     blkinfos: Box<[BlkInfo]>,
 }
 
@@ -62,7 +54,6 @@ impl<'a> VirtIOBlk<'a> {
             inner: Mutex::new(VirtIoBlkInner {
                 header,
                 queue,
-                #[cfg(feature = "async")]
                 blkinfos: {
                     let mut vec = Vec::<BlkInfo>::with_capacity(queue_size as usize);
                     vec.resize_with(queue_size as usize, || NULLINFO);
@@ -78,7 +69,6 @@ impl<'a> VirtIOBlk<'a> {
         inner.header.ack_interrupt()
     }
 
-    #[cfg(feature = "async")]
     /// Handle virtio blk intrupt.
     pub fn handle_irq(self: &Arc<Self>) -> Result {
         let mut inner = self.inner.lock();
@@ -94,32 +84,6 @@ impl<'a> VirtIOBlk<'a> {
         Ok(())
     }
 
-    #[cfg(not(feature = "async"))]
-    /// Read a block.
-    pub fn read_block(self: &Arc<Self>, block_id: usize, buf: &mut [u8]) -> Result {
-        assert_eq!(buf.len(), BLK_SIZE);
-        let req = BlkReq {
-            type_: ReqType::In,
-            reserved: 0,
-            sector: block_id as u64,
-        };
-        let mut inner = self.inner.lock();
-        let mut resp = BlkResp::default();
-        inner
-            .queue
-            .add(&[req.as_buf()], &[buf, resp.as_buf_mut()])?;
-        inner.header.notify(0);
-        while !inner.queue.can_pop() {
-            spin_loop();
-        }
-        inner.queue.pop_used()?;
-        match resp.status {
-            RespStatus::Ok => Ok(()),
-            _ => Err(Error::IoError),
-        }
-    }
-
-    #[cfg(feature = "async")]
     /// Read a block.
     pub fn read_block(
         self: &Arc<Self>,
@@ -147,32 +111,6 @@ impl<'a> VirtIOBlk<'a> {
         future
     }
 
-    #[cfg(not(feature = "async"))]
-    /// Write a block.
-    pub fn write_block(self: &Arc<Self>, block_id: usize, buf: &[u8]) -> Result {
-        assert_eq!(buf.len(), BLK_SIZE);
-        let req = BlkReq {
-            type_: ReqType::Out,
-            reserved: 0,
-            sector: block_id as u64,
-        };
-        let mut inner = self.inner.lock();
-        let mut resp = BlkResp::default();
-        inner
-            .queue
-            .add(&[req.as_buf(), buf], &[resp.as_buf_mut()])?;
-        inner.header.notify(0);
-        while !inner.queue.can_pop() {
-            spin_loop();
-        }
-        inner.queue.pop_used()?;
-        match resp.status {
-            RespStatus::Ok => Ok(()),
-            _ => Err(Error::IoError),
-        }
-    }
-
-    #[cfg(feature = "async")]
     /// Write a block.
     pub fn write_block(self: &Arc<Self>, block_id: usize, buf: &[u8]) -> Pin<Box<BlkFuture<'a>>> {
         assert_eq!(buf.len(), BLK_SIZE);
@@ -257,24 +195,20 @@ impl Default for BlkResp {
     }
 }
 
-#[cfg(feature = "async")]
 #[repr(C)]
 #[derive(Debug)]
 struct BlkInfo {
     waker: Option<Waker>,
 }
 
-#[cfg(feature = "async")]
 const NULLINFO: BlkInfo = BlkInfo::new();
 
-#[cfg(feature = "async")]
 impl BlkInfo {
     const fn new() -> Self {
         BlkInfo { waker: None }
     }
 }
 
-#[cfg(feature = "async")]
 pub struct BlkFuture<'a> {
     resp: BlkResp,
     head: u16,
@@ -282,7 +216,6 @@ pub struct BlkFuture<'a> {
     err: Option<Error>,
 }
 
-#[cfg(feature = "async")]
 impl<'a> BlkFuture<'a> {
     pub fn new(driver: Arc<VirtIOBlk<'a>>) -> Self {
         Self {
@@ -294,7 +227,6 @@ impl<'a> BlkFuture<'a> {
     }
 }
 
-#[cfg(feature = "async")]
 impl Future for BlkFuture<'_> {
     type Output = Result;
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
