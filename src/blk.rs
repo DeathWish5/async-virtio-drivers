@@ -97,7 +97,7 @@ impl<'a> VirtIOBlk<'a> {
             sector: block_id as u64,
         };
         let mut inner = self.inner.lock();
-        let mut future = Box::pin(BlkFuture::new(Arc::clone(&self)));
+        let mut future = Box::pin(BlkFuture::new(Arc::clone(self)));
         match inner
             .queue
             .add(&[req.as_buf()], &[buf, future.resp.as_buf_mut()])
@@ -120,7 +120,7 @@ impl<'a> VirtIOBlk<'a> {
             sector: block_id as u64,
         };
         let mut inner = self.inner.lock();
-        let mut future = Box::pin(BlkFuture::new(Arc::clone(&self)));
+        let mut future = Box::pin(BlkFuture::new(Arc::clone(self)));
         match inner
             .queue
             .add(&[req.as_buf(), buf], &[future.resp.as_buf_mut()])
