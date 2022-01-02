@@ -108,6 +108,7 @@ impl<'a> VirtIOBlk<'a> {
             }
             Err(e) => future.err = Some(e),
         }
+        inner.header.notify(0);
         future
     }
 
