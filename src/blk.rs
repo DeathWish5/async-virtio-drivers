@@ -9,8 +9,9 @@ use core::{
     task::{Context, Poll, Waker},
 };
 use log::*;
-use spin::Mutex;
+// use spin::Mutex;
 use volatile::Volatile;
+use kernel_sync::spinlock::SpinLock;
 
 /// The virtio block device is a simple virtual block device (ie. disk).
 ///
@@ -18,7 +19,7 @@ use volatile::Volatile;
 /// and serviced (probably out of order) by the device except where noted.
 pub struct VirtIOBlk<'a> {
     capacity: usize,
-    inner: Mutex<VirtIoBlkInner<'a>>,
+    inner: SpinLock<VirtIoBlkInner<'a>>,
 }
 
 struct VirtIoBlkInner<'a> {
@@ -51,7 +52,7 @@ impl<'a> VirtIOBlk<'a> {
 
         Ok(VirtIOBlk {
             capacity: config.capacity.read() as usize,
-            inner: Mutex::new(VirtIoBlkInner {
+            inner: SpinLock::new(VirtIoBlkInner {
                 header,
                 queue,
                 blkinfos: {
