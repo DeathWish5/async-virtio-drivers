@@ -12,4 +12,4 @@ volatile = "0.3"
 log = "0.4"
 bitflags = "1.3"
 spin = "0.9"
-kernel_sync = { git="https://github.com/pleasewhy/kernel-sync.git" , rev="e1b2368"}
+kernel_sync = { git="https://github.com/pleasewhy/kernel-sync.git" , rev="86ffa42"}

@@ -10,8 +10,8 @@ use core::{
 };
 use log::*;
 // use spin::Mutex;
-use volatile::Volatile;
 use kernel_sync::spinlock::SpinLock;
+use volatile::Volatile;
 
 /// The virtio block device is a simple virtual block device (ie. disk).
 ///
