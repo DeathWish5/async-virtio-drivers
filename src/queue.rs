@@ -1,6 +1,6 @@
 use core::mem::size_of;
 use core::slice;
-use core::sync::atomic::{fence, Ordering};
+use core::sync::atomic::{fence, Ordering, AtomicU16};
 
 use super::*;
 use crate::header::VirtIOHeader;
@@ -11,27 +11,34 @@ use volatile::Volatile;
 /// The mechanism for bulk data transport on virtio devices.
 ///
 /// Each device can have zero or more virtqueues.
+/// *A* means the element is used and only used in interrupt handler
+/// *AB* means the element is used in both interrupt handler and normal kernel routines
+/// no tag or *B* means the elements is used and only used in normal kernel routines
+/// *C* means the element is constant and ready-only
+/// *E* means ...
 #[repr(C)]
-pub struct VirtQueue<'a> {
-    /// DMA guard
+pub struct VirtQueue<'a> { // *AB*
+    /// DMA guard, *C*
     dma: DMA,
-    /// Descriptor table
+    /// Descriptor table, *AB*
     desc: &'a mut [Descriptor],
-    /// Available ring
+    /// Available ring, *B*
     avail: &'a mut AvailRing,
-    /// Used ring
+    /// Used ring, *A*
     used: &'a mut UsedRing,
 
-    /// The index of queue
+    /// The index of queue, *C*
     queue_idx: u32,
-    /// The size of queue
+    /// The size of queue, *C*
     queue_size: u16,
-    /// The number of used queues.
-    num_used: u16,
-    /// The head desc index of the free list.
+    /// The number of used queues. *E*
+    num_used: AtomicU16,
+    /// The head desc index of the free list. *B*
     free_head: u16,
-    avail_idx: u16,
-    last_used_idx: u16,
+    /// The tail desc index of the free list. *A*
+    free_tail: u16,
+    avail_idx: u16,  // *B*
+    last_used_idx: u16, // *A*
     // Waker to notify that there are more available descriptors
     // waker: Option<Waker>,
 }
@@ -44,7 +51,7 @@ impl VirtQueue<'_> {
         }
         if !size.is_power_of_two()
             || header.max_queue_size() < size as u32
-            || size > MAX_QUEUE_SIZE as u16
+            || MAX_QUEUE_SIZE < size as usize 
         {
             return Err(Error::InvalidParam);
         }
@@ -71,8 +78,9 @@ impl VirtQueue<'_> {
             used,
             queue_size: size,
             queue_idx: idx as u32,
-            num_used: 0,
+            num_used: AtomicU16::new(0),
             free_head: 0,
+            free_tail: size - 1,
             avail_idx: 0,
             last_used_idx: 0,
         })
@@ -85,7 +93,8 @@ impl VirtQueue<'_> {
         if inputs.is_empty() && outputs.is_empty() {
             return Err(Error::InvalidParam);
         }
-        if inputs.len() + outputs.len() + self.num_used as usize > self.queue_size as usize {
+        if inputs.len() + outputs.len() + self.num_used.load(Ordering::Relaxed) as usize 
+                > self.queue_size as usize {
             // TODO: should wait when queue is full.
             // return Err(Error::BufferTooSmall);
             unimplemented!();
@@ -109,12 +118,12 @@ impl VirtQueue<'_> {
         }
         // set last_elem.next = NULL
         {
-            let desc = &mut self.desc[last as usize];
+            let desc = &mut self.desc[last as usize]; 
             let mut flags = desc.flags.read();
             flags.remove(DescFlags::NEXT);
             desc.flags.write(flags);
         }
-        self.num_used += (inputs.len() + outputs.len()) as u16;
+        self.num_used.fetch_add((inputs.len() + outputs.len()) as u16, Ordering::Relaxed);
 
         let avail_slot = self.avail_idx & (self.queue_size - 1);
         self.avail.ring[avail_slot as usize].write(head);
@@ -135,23 +144,24 @@ impl VirtQueue<'_> {
 
     /// The number of free descriptors.
     pub fn available_desc(&self) -> usize {
-        (self.queue_size - self.num_used) as usize
+        (self.queue_size - self.num_used.load(Ordering::Relaxed)) as usize
     }
 
     /// Recycle descriptors in the list specified by head.
     ///
     /// This will push all linked descriptors at the front of the free list.
     fn recycle_descriptors(&mut self, mut head: u16) {
-        let origin_free_head = self.free_head;
-        self.free_head = head;
+        let desc = &mut self.desc[self.free_tail as usize];
+        desc.next.write(head);
+        self.num_used.fetch_sub(1, Ordering::Relaxed);
         loop {
             let desc = &mut self.desc[head as usize];
             let flags = desc.flags.read();
-            self.num_used -= 1;
             if flags.contains(DescFlags::NEXT) {
                 head = desc.next.read();
+                self.num_used.fetch_sub(1, Ordering::Relaxed);
             } else {
-                desc.next.write(origin_free_head);
+                self.free_tail = head;
                 return;
             }
         }
@@ -240,7 +250,7 @@ struct AvailRing {
     /// A driver MUST NOT decrement the idx.
     idx: Volatile<u16>,
     ring: [Volatile<u16>; MAX_QUEUE_SIZE], // actual size: queue_size
-                                           // used_event: Volatile<u16>,
+    used_event: Volatile<u16>,
 }
 
 /// The used ring is where the device returns buffers once it is done with them:
@@ -251,7 +261,7 @@ struct UsedRing {
     flags: Volatile<u16>,
     idx: Volatile<u16>,
     ring: [UsedElem; MAX_QUEUE_SIZE], // actual size: queue_size
-                                      // avail_event: Volatile<u16>,
+    avail_event: Volatile<u16>,
 }
 
 #[repr(C)]

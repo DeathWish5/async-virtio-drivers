@@ -9,7 +9,7 @@ use core::{
     task::{Context, Poll, Waker},
 };
 use log::*;
-use spin::Mutex;
+use kernel_sync::mcslock::{MCSLock as Mutex, LockChannel};
 use volatile::Volatile;
 
 /// The virtio block device is a simple virtual block device (ie. disk).
@@ -17,14 +17,14 @@ use volatile::Volatile;
 /// Read and write requests (and other exotic requests) are placed in the queue,
 /// and serviced (probably out of order) by the device except where noted.
 pub struct VirtIOBlk<'a> {
-    capacity: usize,
-    inner: Mutex<VirtIoBlkInner<'a>>,
+    capacity: usize, // *C*
+    inner: Mutex<VirtIoBlkInner<'a>>, // *AB*
 }
 
 struct VirtIoBlkInner<'a> {
-    header: &'static mut VirtIOHeader,
-    queue: VirtQueue<'a>,
-    blkinfos: Box<[BlkInfo]>,
+    header: &'static mut VirtIOHeader, // *AB*
+    queue: VirtQueue<'a>, // *AB*
+    blkinfos: Box<[BlkInfo]>, // *AB*
 }
 
 impl<'a> VirtIOBlk<'a> {
@@ -65,13 +65,13 @@ impl<'a> VirtIOBlk<'a> {
 
     /// Acknowledge interrupt.
     pub fn ack_interrupt(self: &Arc<Self>) -> bool {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock(LockChannel::Interrupt);
         inner.header.ack_interrupt()
     }
 
     /// Handle virtio blk intrupt.
     pub fn handle_irq(self: &Arc<Self>) -> Result {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock(LockChannel::Interrupt);
         if !inner.queue.can_pop() {
             return Err(Error::NotReady);
         }
@@ -96,7 +96,7 @@ impl<'a> VirtIOBlk<'a> {
             reserved: 0,
             sector: block_id as u64,
         };
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock(LockChannel::Normal);
         let mut future = Box::pin(BlkFuture::new(Arc::clone(self)));
         match inner
             .queue
@@ -108,7 +108,6 @@ impl<'a> VirtIOBlk<'a> {
             }
             Err(e) => future.err = Some(e),
         }
-        inner.header.notify(0);
         future
     }
 
@@ -120,7 +119,7 @@ impl<'a> VirtIOBlk<'a> {
             reserved: 0,
             sector: block_id as u64,
         };
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock(LockChannel::Normal);
         let mut future = Box::pin(BlkFuture::new(Arc::clone(self)));
         match inner
             .queue
@@ -132,7 +131,6 @@ impl<'a> VirtIOBlk<'a> {
             }
             Err(e) => future.err = Some(e),
         }
-        inner.header.notify(0);
         future
     }
 }
@@ -234,7 +232,7 @@ impl Future for BlkFuture<'_> {
         if let Some(e) = self.err {
             return Poll::Ready(Err(e));
         }
-        let mut driver = self.driver.inner.lock();
+        let mut driver = self.driver.inner.lock(LockChannel::Normal);
         match unsafe { core::ptr::read_volatile(&self.resp.status) } {
             RespStatus::Ok => Poll::Ready(Ok(())),
             RespStatus::_NotReady => {
